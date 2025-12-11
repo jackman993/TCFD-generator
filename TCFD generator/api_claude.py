@@ -2,6 +2,8 @@ import streamlit as st
 import anthropic
 from pathlib import Path
 import sys
+import zipfile
+import io
 
 # 加入 TCFD_Table 路徑
 sys.path.append(str(Path(__file__).parent / "TCFD_Table"))
@@ -12,8 +14,6 @@ from tcfd_04_temperature import create_table as create_04
 from tcfd_05_resource import create_table as create_05
 
 # ============ 設定 ============
-# API Key 從側邊欄輸入
-API_KEY = st.sidebar.text_input("🔑 請輸入 Claude API Key", type="password")
 OUTPUT_DIR = Path(__file__).parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -83,6 +83,9 @@ TABLES = [
 st.set_page_config(page_title="TCFD 生成器", page_icon="📊", layout="centered")
 st.title("📊 TCFD 氣候風險分析")
 
+# API Key 從側邊欄輸入
+API_KEY = st.sidebar.text_input("🔑 請輸入 Claude API Key", type="password")
+
 industry = st.text_input("請輸入您的產業", placeholder="例如：鋁建材業")
 
 if st.button("生成 5 個 TCFD 表格", type="primary", use_container_width=True):
@@ -97,6 +100,8 @@ if st.button("生成 5 個 TCFD 表格", type="primary", use_container_width=Tru
     
     client = anthropic.Anthropic(api_key=API_KEY)
     results = []
+    
+    progress_bar = st.progress(0)
     
     for idx, table in enumerate(TABLES):
         st.info(f"⏳ {table['name']}...")
@@ -126,11 +131,60 @@ if st.button("生成 5 個 TCFD 表格", type="primary", use_container_width=Tru
         
         # 生成 PPTX
         filepath = table["create"](lines, industry)
-        results.append({"name": table["name"], "path": filepath})
+        
+        # 讀取檔案內容存入 session_state
+        with open(filepath, "rb") as f:
+            file_data = f.read()
+        
+        results.append({
+            "name": table["name"], 
+            "path": filepath,
+            "filename": filepath.name,
+            "data": file_data
+        })
         st.success(f"✅ {table['name']} 完成（{len(lines)} 行資料）")
+        
+        progress_bar.progress((idx + 1) / len(TABLES))
     
-    # 下載區
-    st.subheader("📁 下載")
-    for r in results:
-        with open(r['path'], "rb") as f:
-            st.download_button(f"⬇️ {r['name']}", f.read(), file_name=r['path'].name, key=r['name'], use_container_width=True)
+    # 儲存結果到 session_state
+    st.session_state.results = results
+    st.session_state.industry = industry
+    st.balloons()
+
+# ============ 下載區（在按鈕外面，使用 session_state）============
+if "results" in st.session_state and st.session_state.results:
+    st.subheader("📁 下載報告")
+    
+    results = st.session_state.results
+    industry = st.session_state.get("industry", "TCFD")
+    
+    # 打包全部下載 (ZIP)
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for r in results:
+            zip_file.writestr(r["filename"], r["data"])
+    zip_buffer.seek(0)
+    
+    st.download_button(
+        label="📦 一次下載全部 (ZIP)",
+        data=zip_buffer.getvalue(),
+        file_name=f"TCFD_{industry}_全部報告.zip",
+        mime="application/zip",
+        use_container_width=True,
+        type="primary"
+    )
+    
+    st.divider()
+    st.write("或個別下載：")
+    
+    # 個別下載
+    cols = st.columns(2)
+    for idx, r in enumerate(results):
+        with cols[idx % 2]:
+            st.download_button(
+                label=f"⬇️ {r['name']}", 
+                data=r["data"], 
+                file_name=r["filename"], 
+                key=f"download_{idx}",
+                use_container_width=True
+            )
